@@ -45,6 +45,7 @@ wandb/*
 !pyproject.toml
 !README.md
 !assets/tuga.svg
+!assets/graph_icon.svg
 
 #other
 .hydra/*

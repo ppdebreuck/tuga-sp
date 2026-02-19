@@ -1,0 +1,19 @@
+<svg width="200" height="200" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+  <g stroke="#000000" stroke-width="3" fill="none">
+    <!-- Simple Graph Structure -->
+    <path d="M100,20 L160,60 L140,140 L60,140 L40,60 Z" stroke-opacity="0.3"/>
+    <line x1="100" y1="20" x2="100" y2="90" />
+    <line x1="160" y1="60" x2="100" y2="90" />
+    <line x1="140" y1="140" x2="100" y2="90" />
+    <line x1="60" y1="140" x2="100" y2="90" />
+    <line x1="40" y1="60" x2="100" y2="90" />
+    
+    <!-- Nodes -->
+    <circle cx="100" cy="20" r="6" fill="#000000"/>
+    <circle cx="160" cy="60" r="6" fill="#000000"/>
+    <circle cx="140" cy="140" r="6" fill="#000000"/>
+    <circle cx="60" cy="140" r="6" fill="#000000"/>
+    <circle cx="40" cy="60" r="6" fill="#000000"/>
+    <circle cx="100" cy="90" r="8" fill="#ffffff" stroke-width="4"/>
+  </g>
+</svg>

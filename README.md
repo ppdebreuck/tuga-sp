@@ -1,5 +1,6 @@
 <p align="center">
-  <img src="assets/tuga.svg" alt="TugaSP Logo" width="100">
+  <img src="assets/tuga.svg" alt="Tuga Logo" width="120">
+  <img src="assets/graph_icon.svg" alt="GNN Icon" width="100">
 </p>
 
 # Tuga-SP
@@ -11,6 +12,7 @@
 - **Transformer Backbone**
 - **Physics-Informed Embeddings**: Supports Pettifor embeddings and custom element features.
 - **Parallel Processing**: Fast graph construction using multi-core processing.
+- **Multi-GPU Training**: Built-in support for DDP training via PyTorch Lightning.
 - **SOTA Modules**: SwiGLU activations, RMSNorm
 
 ## Installation
