@@ -26,17 +26,17 @@ Use `uv` for lightning-fast dependency management, but `pip` works too.
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Clone and install in a venv
-git clone https://github.com/pierre-paul/tuga-sp.git
+git clone git@gitlab.ruhr-uni-bochum.de:aiims/tuga-sp.git
 cd tuga-sp
 uv venv
 source .venv/bin/activate
-uv pip install .
+uv pip install -e .
 ```
 
 ### Using `pip`
 
 ```bash
-pip install .
+pip install -e .
 ```
 
 To install with benchmarking dependencies (Hydra, WandB, Matminer): -> this coming soon, future commit
