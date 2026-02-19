@@ -5,15 +5,16 @@
 
 # Tuga-SP
 
-**Tuga-SP** is an invariant Graph Neural Network (GNN) for material property prediction. It leverages the atomic and line graph representations, using Transformer attention mechanisms to achieve state-of-the-art accuracy on crystal structure tasks.
+**Tuga-SP** is an invariant Graph Neural Network (GNN) for material property prediction. It leverages the atomic and line (dual) graph representations, using Transformer attention mechanisms to achieve state-of-the-art accuracy on crystal structure tasks.
 
 ## Key Features
 - **Hierarchical Graph Representation**: Nodes (atoms), Edges (bonds), and Triplets (angles).
-- **Transformer Backbone**
+- **Transformer Backbone**: Multi-head attention across all graph components.
 - **Physics-Informed Embeddings**: Supports Pettifor embeddings and custom element features.
 - **Parallel Processing**: Fast graph construction using multi-core processing.
 - **Multi-GPU Training**: Built-in support for DDP training via PyTorch Lightning.
-- **SOTA Modules**: SwiGLU activations, RMSNorm
+- **SOTA Modules**: SwiGLU activations, RMSNorm.
+- **Built on the Shoulders of Giants**: Optimized with `PyTorch`, `PyTorch Geometric`, `PyTorch Lightning`, and `Pymatgen`.
 
 ## Installation
 
