@@ -4,8 +4,10 @@
 </p>
 
 # Tuga-SP
+**TugaSP** is a lightweight, easy-to-use graph model designed to make graph work feel effortless.  
+If Tuga can use it, so can you. *Waf!*
 
-**Tuga-SP** is an invariant Graph Neural Network (GNN) for material property prediction. It leverages the atomic and line (dual) graph representations, using Transformer attention mechanisms to achieve state-of-the-art accuracy on crystal structure tasks.
+The model is an invariant Graph Neural Network (GNN) for material property prediction. It leverages the atomic and line (dual) graph representations, using Transformer attention mechanisms to achieve state-of-the-art accuracy on crystal structure tasks.
 
 ## Key Features
 - **Hierarchical Graph Representation**: Nodes (atoms), Edges (bonds), and Triplets (angles).
