@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 import numpy as np
 import torch
@@ -61,12 +61,34 @@ class TugaGraphBuilder:
         cutoff: float = 5.0,
         max_neighbors: int = 12,
         max_neighbors_dihedral: int = 4,
+        site_properties: Optional[Union[str, List[str]]] = None,
     ):
         self.cutoff = cutoff
         self.max_neighbors = max_neighbors
         self.max_neighbors_dihedral = max_neighbors_dihedral
         # this is till experimental....
         self.compute_dihedrals = False
+        # Site properties to extract as node features
+        if isinstance(site_properties, str):
+            site_properties = [site_properties]
+        self.site_properties = site_properties
+
+    def get_site_feat_dim(self, structure: Structure) -> int:
+        """
+        Compute the total dimension of site features for a given structure.
+        Useful to determine site_property_dim before building all graphs.
+        """
+        if not self.site_properties:
+            return 0
+        total = 0
+        for name in self.site_properties:
+            vals = structure.site_properties.get(name)
+            if vals is None:
+                total += 1
+            else:
+                v = np.asarray(vals[0])
+                total += 1 if v.ndim == 0 else v.shape[0]
+        return total
 
     def get_graph(self, structure, properties=None, mat_id=None) -> "CrystalGraph":
         """
@@ -83,6 +105,23 @@ class TugaGraphBuilder:
         # 1. Node features (Atomic Numbers)
         self_feats = [get_atom_features(site) for site in structure.species]
         x = torch.tensor(np.vstack(self_feats), dtype=torch.long)
+
+        # 1b. Site property features (optional)
+        site_feat = None
+        if self.site_properties:
+            n_sites = len(structure)
+            columns = []
+            for name in self.site_properties:
+                vals = structure.site_properties.get(name)
+                if vals is None:
+                    # Missing property: fill with zeros; infer dim from 1 (scalar fallback)
+                    columns.append(np.zeros((n_sites, 1), dtype=np.float32))
+                else:
+                    arr = np.asarray(vals, dtype=np.float32)
+                    if arr.ndim == 1:
+                        arr = arr[:, None]  # (N,) -> (N, 1)
+                    columns.append(arr)
+            site_feat = torch.tensor(np.concatenate(columns, axis=1), dtype=torch.float32)
 
         # 2. Edges (bonds) with Cutoff + Max Neighbors strategy
         center_indices, neighbor_indices, images, distances = (
@@ -374,6 +413,7 @@ class TugaGraphBuilder:
             dihedral_index=dihedral_index,
             dihedral_attr=dihedral_attr,
             lattice_params=lattice_params,
+            site_feat=site_feat,
         )
 
         if mat_id:

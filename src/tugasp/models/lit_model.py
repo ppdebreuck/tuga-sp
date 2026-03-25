@@ -32,6 +32,9 @@ class LitTugaSP(L.LightningModule):
         use_swiglu: bool = False,
         use_lattice_encoding: bool = True,
         use_dihedrals: bool = False,
+        # Site properties
+        site_property_dim: int = 0,
+        site_properties: list = None,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -52,6 +55,7 @@ class LitTugaSP(L.LightningModule):
             use_swiglu=use_swiglu,
             use_lattice_encoding=use_lattice_encoding,
             use_dihedrals=use_dihedrals,
+            site_property_dim=site_property_dim,
         )
         self.lr = lr
         self.weight_decay = weight_decay

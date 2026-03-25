@@ -43,7 +43,8 @@ class Predictor:
 
         self.model.to(self.device)
         self.model.eval()
-        self.graph_builder = TugaGraphBuilder()
+        site_properties = getattr(self.model.hparams, "site_properties", None)
+        self.graph_builder = TugaGraphBuilder(site_properties=site_properties)
 
     def predict(self, structure, n_jobs: int = 1):
         """

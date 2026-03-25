@@ -191,12 +191,15 @@ class TugaGraphTransformer(nn.Module):
         use_dihedrals: bool = False,
         num_dihedral_basis: int = 20,
         custom_embedding_dict: dict = None,
+        # Site properties
+        site_property_dim: int = 0,
     ):
         super().__init__()
         self.d_model = d_model
         self.use_lattice_encoding = use_lattice_encoding
         self.use_dihedrals = use_dihedrals
         self.edge_cutoff = edge_rbf_stop
+        self.site_property_dim = site_property_dim
 
         # Calculate feedforward dimension
         dim_feedforward = int(d_model * dff_ratio)
@@ -231,6 +234,16 @@ class TugaGraphTransformer(nn.Module):
         # --- Lattice Encoder (optional) ---
         if use_lattice_encoding:
             self.lattice_encoder = LatticeEncoder(d_model)
+
+        # --- Site Property Projector (optional) ---
+        if site_property_dim > 0:
+            self.site_proj = MLP(
+                d_in=site_property_dim,
+                d_hidden=d_model,
+                d_out=d_model,
+                num_layers=2,
+                activation=activation,
+            )
 
         # --- Encoder ---
         self.encoder = InteractionBlock(
@@ -331,6 +344,10 @@ class TugaGraphTransformer(nn.Module):
         if x.dim() > 1 and x.size(1) == 1:
             x = x.squeeze(1)
         x = self.atom_embedding(x)
+
+        # Inject site property features (additive, at first layer)
+        if self.site_property_dim > 0 and hasattr(batch, "site_feat") and batch.site_feat is not None:
+            x = x + self.site_proj(batch.site_feat.float())
 
         # Edge RBF + Cutoff
         raw_dist = edge_attr

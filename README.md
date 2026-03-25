@@ -148,10 +148,29 @@ predictor = Predictor(model_path="best_model.ckpt", device="cuda:1")
 
 ## Data Format
 
-TugaSP is designed to work seamlessly with [Pymatgen](https://pymatgen.org/) `Structure` objects. 
+TugaSP is designed to work seamlessly with [Pymatgen](https://pymatgen.org/) `Structure` objects.
 - **Nodes**: Features are automatically derived from atomic numbers.
 - **Edges**: Bonds are determined via distance cutoffs (default **5.0 Å**).
 - **Angles**: Triplets are formed between all bonds sharing a common atom.
+
+### Site Properties as Node Features
+
+You can enrich node features with any per-site scalar or vector quantity stored in a pymatgen `Structure` (e.g. magnetic moments, forces, charges, spin vectors). Pass the property name(s) via `site_properties`:
+
+```python
+# Add site properties to your pymatgen structures
+structure.add_site_property("mag_moment", [0.0, 2.2, ...])       # scalar per site
+structure.add_site_property("force", [[0.1, 0.2, 0.3], ...]) # 3-vector per site
+
+model = train_model(
+    train_structures=structures,
+    train_targets=targets,
+    site_properties=["mag_moment"],              # single scalar property
+    # site_properties=["mag_moment", "force"],   # multiple / vector properties
+)
+```
+
+Scalars become `(N, 1)` and vectors become `(N, D)` tensors; multiple properties are concatenated to `(N, total_dim)` per batch. Missing properties on a structure are zero-filled automatically. The combined vector is projected via a 2-layer MLP to `d_model` and added to the atom embedding at the first layer.
 
 ## Config script for easy training - coming soon
 
@@ -163,7 +182,7 @@ python benchmark/matbench.py experiment=mp_e_form
 
 ## TODO
 - [ ] Add global state embedding (pressure, temperature, ...)
-- [ ] Add node embeddings from pymatgen site properties
+- [x] Add node embeddings from pymatgen site properties
 - ... please make an issue/PR for other ideas!
 
 ## License
