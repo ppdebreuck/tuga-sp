@@ -41,3 +41,8 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tugasp"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+]
