@@ -62,6 +62,7 @@ class TugaGraphBuilder:
         max_neighbors: int = 12,
         max_neighbors_dihedral: int = 4,
         site_properties: Optional[Union[str, List[str]]] = None,
+        state_properties: Optional[Union[str, List[str]]] = None,
     ):
         self.cutoff = cutoff
         self.max_neighbors = max_neighbors
@@ -72,6 +73,9 @@ class TugaGraphBuilder:
         if isinstance(site_properties, str):
             site_properties = [site_properties]
         self.site_properties = site_properties
+        if isinstance(state_properties, str):
+            state_properties = [state_properties]
+        self.state_properties = state_properties
 
     def get_site_feat_dim(self, structure: Structure) -> int:
         """
@@ -89,6 +93,39 @@ class TugaGraphBuilder:
                 v = np.asarray(vals[0])
                 total += 1 if v.ndim == 0 else v.shape[0]
         return total
+
+    def get_state_feat_dim(self) -> int:
+        """
+        Compute the dimension of structure-level state features.
+        """
+        if not self.state_properties:
+            return 0
+        return len(self.state_properties)
+
+    def _get_state_feat(self, structure: Structure) -> Optional[torch.Tensor]:
+        if not self.state_properties:
+            return None
+
+        values = []
+        for name in self.state_properties:
+            if name not in structure.properties:
+                raise ValueError(
+                    f"Missing required state property '{name}' in structure.properties"
+                )
+
+            try:
+                arr = np.asarray(structure.properties[name], dtype=np.float32)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"State property '{name}' must be a numeric scalar"
+                ) from exc
+            if arr.ndim != 0:
+                raise ValueError(
+                    f"State property '{name}' must be a scalar, got shape {arr.shape}"
+                )
+            values.append(float(arr))
+
+        return torch.tensor([values], dtype=torch.float32)
 
     def get_graph(self, structure, properties=None, mat_id=None) -> "CrystalGraph":
         """
@@ -122,6 +159,9 @@ class TugaGraphBuilder:
                         arr = arr[:, None]  # (N,) -> (N, 1)
                     columns.append(arr)
             site_feat = torch.tensor(np.concatenate(columns, axis=1), dtype=torch.float32)
+
+        # 1c. Structure-level state features (optional)
+        state_feat = self._get_state_feat(structure)
 
         # 2. Edges (bonds) with Cutoff + Max Neighbors strategy
         center_indices, neighbor_indices, images, distances = (
@@ -414,6 +454,7 @@ class TugaGraphBuilder:
             dihedral_attr=dihedral_attr,
             lattice_params=lattice_params,
             site_feat=site_feat,
+            state_feat=state_feat,
         )
 
         if mat_id:

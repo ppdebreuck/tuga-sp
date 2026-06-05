@@ -192,6 +192,7 @@ class InteractionBlock(nn.Module):
         edge_batch,
         triplet_indices,
         angle_feats,
+        state_feats=None,
         dihedral_index=None,
         dihedral_feats=None,
     ):
@@ -214,6 +215,7 @@ class InteractionBlock(nn.Module):
                 edge_batch,
                 triplet_indices,
                 a,
+                state_feats,
                 angle_batch,
                 dihedral_index,
                 d,
@@ -307,6 +309,7 @@ class InteractionLayer(nn.Module):
         edge_batch,
         triplet_indices,
         a,
+        state_feats=None,
         angle_batch=None,
         dihedral_index=None,
         d=None,
@@ -326,10 +329,16 @@ class InteractionLayer(nn.Module):
 
         # Update Edges
         src, dst = edge_index
+        if state_feats is not None:
+            e = e + state_feats[edge_batch]
         edge_input = torch.cat([x[src], x[dst], e], dim=-1)
         e_upd = self.node_edge_mixer(edge_input)
         e = e + e_upd
         e = self.edge_norm(e)
+
+        # Update Nodes
+        if state_feats is not None:
+            x = x + state_feats[node_batch]
 
         # Update Angles
         e_j, e_k = triplet_indices
