@@ -44,7 +44,11 @@ class Predictor:
         self.model.to(self.device)
         self.model.eval()
         site_properties = getattr(self.model.hparams, "site_properties", None)
-        self.graph_builder = TugaGraphBuilder(site_properties=site_properties)
+        state_properties = getattr(self.model.hparams, "state_properties", None)
+        self.graph_builder = TugaGraphBuilder(
+            site_properties=site_properties,
+            state_properties=state_properties,
+        )
 
     def predict(self, structure, n_jobs: int = 1):
         """

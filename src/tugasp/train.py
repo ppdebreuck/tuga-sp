@@ -31,6 +31,8 @@ def train_model(
     use_dihedrals=False,
     # Site properties
     site_properties=None,
+    # Structure-level state properties
+    state_properties=None,
     # Training Params
     batch_size=32,
     max_epochs=100,
@@ -56,7 +58,10 @@ def train_model(
     """
 
     # 1. Process Data
-    graph_builder = TugaGraphBuilder(site_properties=site_properties)
+    graph_builder = TugaGraphBuilder(
+        site_properties=site_properties,
+        state_properties=state_properties,
+    )
 
     def process_data(structures, targets=None):
         if not structures:
@@ -96,6 +101,11 @@ def train_model(
     if site_properties and train_data and hasattr(train_data[0], "site_feat") and train_data[0].site_feat is not None:
         site_property_dim = train_data[0].site_feat.shape[-1]
 
+    # Infer state_property_dim from the first graph
+    state_property_dim = 0
+    if state_properties and train_data and hasattr(train_data[0], "state_feat") and train_data[0].state_feat is not None:
+        state_property_dim = train_data[0].state_feat.shape[-1]
+
     # 2. Setup DataModule
     dm = TugaDataModule(
         train_data=train_data,
@@ -119,6 +129,8 @@ def train_model(
         use_dihedrals=use_dihedrals,
         site_property_dim=site_property_dim,
         site_properties=site_properties,
+        state_property_dim=state_property_dim,
+        state_properties=state_properties,
         **kwargs,
     )
 

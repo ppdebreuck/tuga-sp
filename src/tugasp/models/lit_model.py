@@ -35,6 +35,9 @@ class LitTugaSP(L.LightningModule):
         # Site properties
         site_property_dim: int = 0,
         site_properties: list = None,
+        # Structure-level state properties
+        state_property_dim: int = 0,
+        state_properties: list = None,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -56,6 +59,7 @@ class LitTugaSP(L.LightningModule):
             use_lattice_encoding=use_lattice_encoding,
             use_dihedrals=use_dihedrals,
             site_property_dim=site_property_dim,
+            state_property_dim=state_property_dim,
         )
         self.lr = lr
         self.weight_decay = weight_decay

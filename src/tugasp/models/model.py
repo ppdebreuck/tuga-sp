@@ -193,6 +193,8 @@ class TugaGraphTransformer(nn.Module):
         custom_embedding_dict: dict = None,
         # Site properties
         site_property_dim: int = 0,
+        # Structure-level state properties
+        state_property_dim: int = 0,
     ):
         super().__init__()
         self.d_model = d_model
@@ -200,6 +202,7 @@ class TugaGraphTransformer(nn.Module):
         self.use_dihedrals = use_dihedrals
         self.edge_cutoff = edge_rbf_stop
         self.site_property_dim = site_property_dim
+        self.state_property_dim = state_property_dim
 
         # Calculate feedforward dimension
         dim_feedforward = int(d_model * dff_ratio)
@@ -239,6 +242,16 @@ class TugaGraphTransformer(nn.Module):
         if site_property_dim > 0:
             self.site_proj = MLP(
                 d_in=site_property_dim,
+                d_hidden=d_model,
+                d_out=d_model,
+                num_layers=2,
+                activation=activation,
+            )
+
+        # --- Global State Property Projector (optional) ---
+        if state_property_dim > 0:
+            self.state_proj = MLP(
+                d_in=state_property_dim,
                 d_hidden=d_model,
                 d_out=d_model,
                 num_layers=2,
@@ -302,6 +315,8 @@ class TugaGraphTransformer(nn.Module):
             readout_dim += d_model
         if use_lattice_encoding:
             readout_dim += d_model
+        if state_property_dim > 0:
+            readout_dim += d_model
 
         self.output_head = MLP(
             d_in=readout_dim,
@@ -349,6 +364,12 @@ class TugaGraphTransformer(nn.Module):
         if self.site_property_dim > 0 and hasattr(batch, "site_feat") and batch.site_feat is not None:
             x = x + self.site_proj(batch.site_feat.float())
 
+        state_feats = None
+        if self.state_property_dim > 0:
+            if not hasattr(batch, "state_feat") or batch.state_feat is None:
+                raise ValueError("Batch is missing required state_feat")
+            state_feats = self.state_proj(batch.state_feat.float())
+
         # Edge RBF + Cutoff
         raw_dist = edge_attr
         edge_attr = self.edge_rbf(edge_attr)
@@ -381,6 +402,7 @@ class TugaGraphTransformer(nn.Module):
             edge_batch=edge_batch,
             triplet_indices=triplet_indices,
             angle_feats=angle_attr,
+            state_feats=state_feats,
             dihedral_index=dihedral_index,
             dihedral_feats=dihedral_attr,
         )
@@ -444,7 +466,11 @@ class TugaGraphTransformer(nn.Module):
             )
             graph_repr = torch.cat([graph_repr, zeros], dim=-1)
 
-        # 5. Projection
+        # 5. Global State Readout
+        if state_feats is not None:
+            graph_repr = torch.cat([graph_repr, state_feats], dim=-1)
+
+        # 6. Projection
         out = self.output_head(graph_repr)
 
         return out

@@ -172,6 +172,35 @@ model = train_model(
 
 Scalars become `(N, 1)` and vectors become `(N, D)` tensors; multiple properties are concatenated to `(N, total_dim)` per batch. Missing properties on a structure are zero-filled automatically. The combined vector is projected via a 2-layer MLP to `d_model` and added to the atom embedding at the first layer.
 
+### Global State Properties
+
+You can condition predictions on graph-level scalar state variables stored in `Structure.properties`, such as pressure or temperature. Pass the property name(s) via `state_properties`:
+
+```python
+for structure in structures:
+    structure.properties["pressure"] = 10.0
+
+model = train_model(
+    train_structures=structures,
+    train_targets=targets,
+    state_properties="pressure",
+)
+```
+
+```python
+for structure in structures:
+    structure.properties["temperature"] = 300.0
+    structure.properties["pressure"] = 1.0
+
+model = train_model(
+    train_structures=structures,
+    train_targets=targets,
+    state_properties=["temperature", "pressure"],
+)
+```
+
+State properties are read as raw scalar floats and concatenated to `(B, state_property_dim)` per batch. Requested keys must exist on every structure. The state vector is projected to `d_model`, broadcast into node and edge updates, and concatenated into the final graph readout.
+
 ## Config script for easy training - coming soon
 
 Detailed configurations for Matbench and Materials Project benchmarks can be found in the `benchmark/` directory. These experiments use [Hydra](https://hydra.cc/) for configuration management.
@@ -181,7 +210,7 @@ python benchmark/matbench.py experiment=mp_e_form
 ```
 
 ## TODO
-- [ ] Add global state embedding (pressure, temperature, ...)
+- [x] Add global state embedding (pressure, temperature, ...)
 - [x] Add node embeddings from pymatgen site properties
 - ... please make an issue/PR for other ideas!
 
