@@ -50,7 +50,7 @@ class Predictor:
             state_properties=state_properties,
         )
 
-    def predict(self, structure, n_jobs: int = 1):
+    def predict(self, structure, n_jobs: int = 1, show_progress: bool = True):
         """
         Predict property for a single pymatgen Structure or list of structures.
 
@@ -69,7 +69,7 @@ class Predictor:
             structure = [structure]
 
         # Use parallel graph building for multiple structures
-        graphs = self.graph_builder.get_graphs(structure, n_jobs=n_jobs)
+        graphs = self.graph_builder.get_graphs(structure, show_progress=show_progress, n_jobs=n_jobs)
 
         # Batch size can be len(graphs) for small inference
         loader = create_loader(graphs, batch_size=len(graphs), shuffle=False)
