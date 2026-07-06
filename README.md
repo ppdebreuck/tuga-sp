@@ -201,6 +201,86 @@ model = train_model(
 
 State properties are read as raw scalar floats and concatenated to `(B, state_property_dim)` per batch. Requested keys must exist on every structure. The state vector is projected to `d_model`, broadcast into node and edge updates, and concatenated into the final graph readout.
 
+## On-the-Fly Data Loading & Adapters
+
+For large datasets (e.g. millions of structures) where keeping all graphs in memory is impossible, TugaSP supports **on-the-fly graph construction** using the **Adapter Pattern**. Graphs are constructed in parallel inside CPU worker processes as training progresses.
+
+You can specify the number of parallel CPU worker processes using the `num_workers` parameter in `train_model`.
+
+### 1. Using Built-in Adapters (e.g. ASE LMDB/SQLite)
+
+Built-in adapters simplify loading from standard files. For example, to train directly from an ASE `.aselmdb` database:
+
+```python
+from tugasp.train import train_model
+from tugasp.data.adapters import AseLmdbAdapter
+
+# Instantiate adapters pointing to ASE DB/LMDB files
+train_adapter = AseLmdbAdapter("path/to/train.aselmdb")
+val_adapter = AseLmdbAdapter("path/to/val.aselmdb")
+
+model = train_model(
+    train_structures=train_adapter,
+    val_structures=val_adapter,
+    num_workers=4,  # Spawns 4 background CPU processes to build graphs in parallel
+    batch_size=64,
+    max_epochs=100
+)
+```
+
+Available built-in adapters:
+- `ListStoreAdapter(structures, targets)`: Wraps raw in-memory structures and target lists.
+- `PickleAdapter(pickle_path)`: Loads a list of structures/atoms from a `.pkl` file.
+- `AseLmdbAdapter(path)`: Reads from ASE database/LMDB files or folders (uses `fairchem` if available, otherwise falls back to standard `ase.db`).
+
+### 2. Creating a Custom Adapter
+
+You can easily train on any database (SQLite, MySQL, MongoDB, JSON, etc.) by implementing a custom adapter that inherits from `BaseStoreAdapter` and implements `__len__` and `__getitem__`:
+
+```python
+from tugasp.train import train_model
+from tugasp.data.adapters import BaseStoreAdapter
+
+class CustomSqlAdapter(BaseStoreAdapter):
+    def __init__(self, db_path):
+        self.db_path = db_path
+        self.length = self._count_rows()
+
+    def __len__(self) -> int:
+        return self.length
+
+    def __getitem__(self, idx: int) -> dict:
+        # 1. Fetch record from your database at index `idx`
+        # 2. Convert to an ase.Atoms or pymatgen.Structure object
+        # 3. Return a dictionary with the structure and potential target
+        return {
+            "structure": structure,  # pymatgen.Structure or ase.Atoms
+            "y": target_value,       # Float or array target property (optional)
+            "mat_id": f"id-{idx}"    # String ID for tracking (optional)
+        }
+
+# Pass the custom adapter directly to train_model
+model = train_model(
+    train_structures=CustomSqlAdapter("database.db"),
+    num_workers=8,
+    batch_size=128
+)
+```
+
+### 3. Dynamic-Cost Batching
+
+To guard against GPU Out-of-Memory (OOM) errors when structures vary significantly in size, you can specify maximum node, edge, or triplet budgets per batch. Batches are built dynamically until these budgets are met:
+
+```python
+model = train_model(
+    train_structures=train_adapter,
+    val_structures=val_adapter,
+    max_nodes_per_batch=10000,    # Max total atoms in a single batch
+    max_edges_per_batch=50000,    # Max total bonds in a single batch
+    max_triplets_per_batch=150000, # Max total angles in a single batch
+)
+```
+
 ## Config script for easy training - coming soon
 
 Detailed configurations for Matbench and Materials Project benchmarks can be found in the `benchmark/` directory. These experiments use [Hydra](https://hydra.cc/) for configuration management.

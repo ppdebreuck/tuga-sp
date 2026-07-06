@@ -178,8 +178,16 @@ class TugaGraphBuilder:
         neighbor_coords = cart_coords[neighbor_indices] + image_offsets
         diff_vecs = neighbor_coords - center_coords
 
-        # Apply sorting
-        sort_idx = np.lexsort((distances, center_indices))
+        # Apply sorting with deterministic tie-breaking for degenerate shells.
+        norms = np.linalg.norm(diff_vecs, axis=1)
+        norms = np.where(norms < 1e-10, 1.0, norms)
+        dir_vecs = diff_vecs / norms[:, None]
+        dir_x = np.round(dir_vecs[:, 0], decimals=6)
+        dir_y = np.round(dir_vecs[:, 1], decimals=6)
+        dir_z = np.round(dir_vecs[:, 2], decimals=6)
+        dist_rounded = np.round(distances, decimals=6)
+
+        sort_idx = np.lexsort((dir_z, dir_y, dir_x, dist_rounded, center_indices))
         center_indices = center_indices[sort_idx]
         neighbor_indices = neighbor_indices[sort_idx]
         diff_vecs = diff_vecs[sort_idx]
@@ -473,9 +481,217 @@ class TugaGraphBuilder:
 
         return graph
 
+    def get_graph_from_atoms(self, atoms, properties=None, mat_id=None) -> "CrystalGraph":
+        """
+        Fast direct conversion of an ASE Atoms object to a CrystalGraph.
+        Bypasses pymatgen Structure construction by utilizing the same C++
+        find_points_in_spheres routine.
+        """
+        if self.compute_dihedrals:
+            from pymatgen.io.ase import AseAtomsAdaptor
+            structure = AseAtomsAdaptor.get_structure(atoms)
+            return self.get_graph(structure, properties, mat_id)
+
+        from pymatgen.optimization.neighbors import find_points_in_spheres
+
+        # 1. Node features (Atomic Numbers)
+        atomic_numbers = atoms.get_atomic_numbers().astype(np.int64)
+        x = torch.tensor(atomic_numbers[:, None], dtype=torch.long)
+
+        # 1b. Site property features (optional)
+        site_feat = None
+        if self.site_properties:
+            n_sites = len(atoms)
+            columns = []
+            for name in self.site_properties:
+                vals = None
+                if name in atoms.arrays:
+                    vals = atoms.arrays[name]
+                elif name in ["mag_moment", "magmom"]:
+                    try:
+                        vals = atoms.get_initial_magnetic_moments()
+                    except Exception:
+                        pass
+                elif name == "charge":
+                    try:
+                        vals = atoms.get_initial_charges()
+                    except Exception:
+                        pass
+                
+                if vals is None:
+                    columns.append(np.zeros((n_sites, 1), dtype=np.float32))
+                else:
+                    arr = np.asarray(vals, dtype=np.float32)
+                    if arr.ndim == 1:
+                        arr = arr[:, None]
+                    columns.append(arr)
+            site_feat = torch.tensor(np.concatenate(columns, axis=1), dtype=torch.float32)
+
+        # 1c. Structure-level state features (optional)
+        state_feat = None
+        if self.state_properties:
+            values = []
+            for name in self.state_properties:
+                if name not in atoms.info:
+                    raise ValueError(
+                        f"Missing required state property '{name}' in atoms.info"
+                    )
+                try:
+                    arr = np.asarray(atoms.info[name], dtype=np.float32)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"State property '{name}' must be a numeric scalar"
+                    ) from exc
+                if arr.ndim != 0:
+                    raise ValueError(
+                        f"State property '{name}' must be a scalar, got shape {arr.shape}"
+                    )
+                values.append(float(arr))
+            state_feat = torch.tensor([values], dtype=torch.float32)
+
+        # 2. Edges (bonds) with Cutoff + Max Neighbors strategy
+        cart_coords = np.ascontiguousarray(atoms.get_positions(), dtype=float)
+        lattice_matrix = np.ascontiguousarray(atoms.cell.array, dtype=float)
+        pbc = np.ascontiguousarray(atoms.pbc, dtype=int)
+
+        center_indices, neighbor_indices, images, distances = find_points_in_spheres(
+            cart_coords, cart_coords, r=float(self.cutoff), pbc=pbc,
+            lattice=lattice_matrix, tol=1e-8,
+        )
+        
+        # Drop self-pairs (i == j at distance ~0)
+        nonself = distances > 1e-8
+        center_indices = center_indices[nonself]
+        neighbor_indices = neighbor_indices[nonself]
+        images = images[nonself]
+        distances = distances[nonself]
+
+        # Calculate difference vectors manually
+        center_coords = cart_coords[center_indices]
+        image_offsets = np.dot(np.ascontiguousarray(images, dtype=float), lattice_matrix)
+        neighbor_coords = cart_coords[neighbor_indices] + image_offsets
+        diff_vecs = neighbor_coords - center_coords
+
+        # Apply sorting with deterministic tie-breaking for degenerate shells.
+        norms = np.linalg.norm(diff_vecs, axis=1)
+        norms = np.where(norms < 1e-10, 1.0, norms)
+        dir_vecs = diff_vecs / norms[:, None]
+        dir_x = np.round(dir_vecs[:, 0], decimals=6)
+        dir_y = np.round(dir_vecs[:, 1], decimals=6)
+        dir_z = np.round(dir_vecs[:, 2], decimals=6)
+        dist_rounded = np.round(distances, decimals=6)
+
+        sort_idx = np.lexsort((dir_z, dir_y, dir_x, dist_rounded, center_indices))
+        center_indices = center_indices[sort_idx]
+        neighbor_indices = neighbor_indices[sort_idx]
+        diff_vecs = diff_vecs[sort_idx]
+        distances = distances[sort_idx]
+
+        # Create ranks
+        counts = np.bincount(center_indices, minlength=len(atoms))
+        group_starts = np.zeros(len(counts), dtype=np.int64)
+        group_starts[1:] = np.cumsum(counts)[:-1]
+        starts_mapped = group_starts[center_indices]
+        ranks = np.arange(len(center_indices)) - starts_mapped
+
+        # Filter by max_neighbors
+        if self.max_neighbors:
+            mask = ranks < self.max_neighbors
+            center_indices = center_indices[mask]
+            neighbor_indices = neighbor_indices[mask]
+            diff_vecs = diff_vecs[mask]
+            distances = distances[mask]
+            ranks = ranks[mask]
+
+        src_indices = center_indices
+        dst_indices = neighbor_indices
+        edge_vecs = torch.tensor(diff_vecs, dtype=torch.float32)
+        edge_ranks = torch.tensor(ranks, dtype=torch.long)
+        edge_dists = torch.tensor(distances, dtype=torch.float32)
+
+        edge_index = torch.stack(
+            [
+                torch.tensor(src_indices, dtype=torch.long),
+                torch.tensor(dst_indices, dtype=torch.long),
+            ]
+        )
+
+        edge_attr = edge_dists.unsqueeze(-1)
+
+        # 3. Triplets
+        _, start_indices, counts = np.unique(
+            src_indices, return_index=True, return_counts=True
+        )
+
+        triplets_left = []
+        triplets_right = []
+
+        mask_triplets = counts >= 2
+        valid_starts = start_indices[mask_triplets]
+        valid_counts = counts[mask_triplets]
+
+        for start, count in zip(valid_starts, valid_counts):
+            edges = np.arange(start, start + count)
+            e_left = np.repeat(edges, count)
+            e_right = np.tile(edges, count)
+            mask = e_left != e_right
+            triplets_left.append(e_left[mask])
+            triplets_right.append(e_right[mask])
+
+        if not triplets_left:
+            triplet_index = torch.empty((2, 0), dtype=torch.long)
+            angle_attr = torch.empty((0, 1), dtype=torch.float32)
+        else:
+            t_left = np.concatenate(triplets_left)
+            t_right = np.concatenate(triplets_right)
+            triplet_index = torch.tensor(np.stack([t_left, t_right]), dtype=torch.long)
+            vec_j = edge_vecs[triplet_index[0]]
+            vec_k = edge_vecs[triplet_index[1]]
+            cos_theta = torch.cosine_similarity(vec_j, vec_k)
+            angle_attr = cos_theta.unsqueeze(-1)
+
+        # 4. Lattice parameters: (a, b, c, α, β, γ)
+        a, b, c, alpha, beta, gamma = atoms.cell.cellpar()
+        lattice_params = torch.tensor(
+            [[a, b, c, alpha, beta, gamma]],
+            dtype=torch.float32,
+        )
+
+        # 5. Build the graph object
+        graph = CrystalGraph(
+            x=x,
+            edge_index=edge_index,
+            edge_attr=edge_attr,
+            triplet_index=triplet_index,
+            angle_attr=angle_attr,
+            lattice_params=lattice_params,
+            site_feat=site_feat,
+            state_feat=state_feat,
+        )
+
+        if mat_id:
+            graph.mat_id = mat_id
+
+        if properties:
+            for k, v in properties.items():
+                if k == "y":
+                    val = torch.tensor(v, dtype=torch.float32)
+                    if val.ndim == 0:
+                        val = val.unsqueeze(0)
+                    graph.y = val
+                else:
+                    setattr(graph, k, v)
+
+        return graph
+
     def _process_batch(self, batch_data):
         """Helper to process a batch of structures in one go."""
-        return [self.get_graph(s, p, m) for s, p, m in batch_data]
+        return [
+            self.get_graph_from_atoms(s, p, m)
+            if hasattr(s, "get_atomic_numbers")
+            else self.get_graph(s, p, m)
+            for s, p, m in batch_data
+        ]
 
     def get_graphs(
         self,
@@ -489,7 +705,7 @@ class TugaGraphBuilder:
         Convert a list of pymatgen Structures to CrystalGraph objects in parallel.
 
         Args:
-            structures: List of pymatgen Structure objects.
+            structures: List of pymatgen Structure objects or ASE Atoms objects.
             properties: Optional list of property dicts corresponding to each structure.
                         If None, all structures will have no properties attached.
             mat_ids: Optional list of material IDs corresponding to each structure.
@@ -530,7 +746,12 @@ class TugaGraphBuilder:
                     desc="Building graphs (Serial)",
                     unit="struct",
                 )
-            return [self.get_graph(s, props, mid) for s, props, mid in iterable]
+            return [
+                self.get_graph_from_atoms(s, props, mid)
+                if hasattr(s, "get_atomic_numbers")
+                else self.get_graph(s, props, mid)
+                for s, props, mid in iterable
+            ]
 
         # Parallel processing with Manual Batching
 

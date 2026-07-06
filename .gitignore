@@ -51,3 +51,5 @@ wandb/*
 .hydra/*
 sync.sh
 .DS_Store
+
+uv.lock
