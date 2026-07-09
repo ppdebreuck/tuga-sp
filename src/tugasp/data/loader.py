@@ -1,6 +1,6 @@
 from typing import Optional, Any
 import pytorch_lightning as L
-from torch.utils.data import IterableDataset
+from torch.utils.data import IterableDataset, get_worker_info
 from torch_geometric.loader import DataLoader
 
 from .onthefly_dataset import OnTheFlyDataset, OnTheFlyIterableDataset
@@ -81,11 +81,32 @@ class DynamicBatchWrapper(IterableDataset):
         self.max_edges = max_edges
         self.max_triplets = max_triplets
 
+    def _iter_source(self):
+        """Yield graphs from the wrapped dataset, sharded across DataLoader workers.
+
+        Iterable inner datasets (e.g. OnTheFlyIterableDataset) already partition
+        their stream per worker internally, so we iterate them directly. Map-style
+        inner datasets have no such logic, so we stride by worker id to avoid every
+        worker emitting the full dataset (which would duplicate data num_workers times).
+        """
+        if isinstance(self.dataset, IterableDataset):
+            yield from self.dataset
+            return
+
+        worker_info = get_worker_info()
+        n = len(self.dataset)
+        if worker_info is None:
+            indices = range(n)
+        else:
+            indices = range(worker_info.id, n, worker_info.num_workers)
+        for i in indices:
+            yield self.dataset[i]
+
     def __iter__(self):
         batch = []
         cur_n, cur_e, cur_t = 0, 0, 0
 
-        for g in self.dataset:
+        for g in self._iter_source():
             n = g.num_nodes
             e = g.num_edges
             t = (
@@ -160,7 +181,7 @@ class OnTheFlyDataModule(L.LightningDataModule):
             return OnTheFlyIterableDataset(
                 adapter=adapter,
                 builder=self.builder,
-                train_ratio=self.train_ratio if is_train else 1.0,
+                train_ratio=self.train_ratio,
                 is_train=is_train,
                 seed=self.seed,
                 shuffle=self.shuffle if is_train else False,

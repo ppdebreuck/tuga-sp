@@ -33,10 +33,9 @@ class OnTheFlyDataset(Dataset):
         
         total_len = len(adapter)
         if train_ratio >= 1.0:
-            if is_train:
-                self.indices = list(range(total_len))
-            else:
-                self.indices = []
+            # No split requested: use all rows for whichever role. This is the
+            # case for separately-provided train/val adapters (each used fully).
+            self.indices = list(range(total_len))
         elif train_ratio <= 0.0:
             if is_train:
                 self.indices = []
