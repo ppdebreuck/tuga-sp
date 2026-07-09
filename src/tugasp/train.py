@@ -1,20 +1,20 @@
-from typing import Callable, List, Optional, Union
-
+from typing import Callable, List, Optional, Union, Any
 import pytorch_lightning as L
 import torch
 
 from .data.dataset import TugaGraphBuilder
-from .data.loader import TugaDataModule
+from .data.adapters import BaseStoreAdapter, ListStoreAdapter
+from .data.loader import OnTheFlyDataModule
 from .models.lit_model import LitTugaSP
 
 
 def train_model(
     train_structures,
-    train_targets: Optional[Union[List, torch.Tensor]] = None,
+    train_targets: Optional[Union[List, torch.Tensor, Any]] = None,
     val_structures=None,
-    val_targets: Optional[Union[List, torch.Tensor]] = None,
+    val_targets: Optional[Union[List, torch.Tensor, Any]] = None,
     test_structures=None,
-    test_targets: Optional[Union[List, torch.Tensor]] = None,
+    test_targets: Optional[Union[List, torch.Tensor, Any]] = None,
     target_mapper: Optional[Callable] = None,
     # Model Hyperparameters (Standardized)
     d_model=128,
@@ -42,76 +42,97 @@ def train_model(
     callbacks=None,
     # Data processing parallelism
     n_jobs: int = 1,
+    num_workers: int = 0,
+    train_ratio: float = 1.0,
+    max_nodes_per_batch: Optional[int] = None,
+    max_edges_per_batch: Optional[int] = None,
+    max_triplets_per_batch: Optional[int] = None,
     **kwargs,
 ):
     """
-    Easy training function supporting both explicit targets and mapper.
+    Easy training function supporting lists of structures/targets and on-the-fly store adapters.
 
     Args:
-        train_structures: List of pymatgen Structures.
+        train_structures: List of pymatgen Structures/Atoms or a BaseStoreAdapter.
         train_targets: List or Tensor of targets corresponding to train_structures.
         target_mapper: Function mapping Structure -> target (alternative to explicit targets).
-        n_jobs: Number of parallel jobs for graph building. Follows joblib conventions:
-                - 1 (default): Sequential processing.
-                - -1: Use all available CPUs.
-                - Positive integer: Use exactly n_jobs workers.
+        n_jobs: Number of parallel jobs for offline/dummy graph building.
+        num_workers: Number of CPU worker processes used by PyTorch DataLoader for on-the-fly graph construction.
+        train_ratio: Fraction of data used for training (rest is val split) if using shared adapter.
     """
+    # 1. Process Data & Wrap in Adapters
+    def get_adapter(structs, targets):
+        if structs is None:
+            return None
+        if isinstance(structs, BaseStoreAdapter) or hasattr(structs, "__getitem__") or hasattr(structs, "__iter__"):
+            # If it's a standard list, wrap in ListStoreAdapter (unless it already contains dicts with structures)
+            if isinstance(structs, list) and len(structs) > 0:
+                first = structs[0]
+                if not isinstance(first, dict) or "structure" not in first:
+                    # Apply target mapper if provided
+                    if targets is None and target_mapper is not None:
+                        resolved_targets = [target_mapper(s) for s in structs]
+                    else:
+                        resolved_targets = targets
+                    return ListStoreAdapter(structs, resolved_targets)
+            return structs
+        # Apply target mapper if provided
+        resolved_targets = targets
+        if targets is None and target_mapper is not None:
+            resolved_targets = [target_mapper(s) for s in structs]
+        return ListStoreAdapter(structs, resolved_targets)
 
-    # 1. Process Data
+    train_adapter = get_adapter(train_structures, train_targets)
+    val_adapter = get_adapter(val_structures, val_targets)
+    test_adapter = get_adapter(test_structures, test_targets)
+
     graph_builder = TugaGraphBuilder(
         site_properties=site_properties,
         state_properties=state_properties,
     )
 
-    def process_data(structures, targets=None):
-        if not structures:
-            return None
-
-        # If already graphs, return as-is
-        if hasattr(structures[0], "edge_index"):
-            return list(structures)
-
-        # Validation checks
-        if targets is not None:
-            if len(structures) != len(targets):
-                raise ValueError(
-                    f"Mismatch: {len(structures)} structures vs {len(targets)} targets"
-                )
-            # Build properties list for get_graphs
-            properties = [{"y": y} for y in targets]
-        elif target_mapper is not None:
-            # Use mapper to generate targets
-            properties = [{"y": target_mapper(s)} for s in structures]
-        else:
-            raise ValueError(
-                "Must provide either `targets` (list) or `target_mapper` (func)."
-            )
-
-        # Use parallel graph building
-        return graph_builder.get_graphs(
-            structures, properties=properties, n_jobs=n_jobs
-        )
-
-    train_data = process_data(train_structures, train_targets)
-    val_data = process_data(val_structures, val_targets)
-    test_data = process_data(test_structures, test_targets)
-
-    # Infer site_property_dim from the first graph
+    # Infer site_property_dim and state_property_dim from the first graph
     site_property_dim = 0
-    if site_properties and train_data and hasattr(train_data[0], "site_feat") and train_data[0].site_feat is not None:
-        site_property_dim = train_data[0].site_feat.shape[-1]
-
-    # Infer state_property_dim from the first graph
     state_property_dim = 0
-    if state_properties and train_data and hasattr(train_data[0], "state_feat") and train_data[0].state_feat is not None:
-        state_property_dim = train_data[0].state_feat.shape[-1]
+
+    if train_adapter is not None:
+        try:
+            if hasattr(train_adapter, "__getitem__"):
+                first_item = train_adapter[0]
+            else:
+                first_item = next(iter(train_adapter))
+            
+            if isinstance(first_item, dict):
+                first_struct = first_item["structure"]
+            else:
+                first_struct = first_item
+
+            if hasattr(first_struct, "get_atomic_numbers"):
+                dummy_graph = graph_builder.get_graph_from_atoms(first_struct)
+            else:
+                dummy_graph = graph_builder.get_graph(first_struct)
+
+            if dummy_graph is not None:
+                if getattr(dummy_graph, "site_feat", None) is not None:
+                    site_property_dim = dummy_graph.site_feat.shape[-1]
+                if getattr(dummy_graph, "state_feat", None) is not None:
+                    state_property_dim = dummy_graph.state_feat.shape[-1]
+        except Exception as e:
+            print(f"Warning: Could not infer site/state property dimensions from dataset: {e}")
 
     # 2. Setup DataModule
-    dm = TugaDataModule(
-        train_data=train_data,
-        val_data=val_data,
-        test_data=test_data,
+    dm = OnTheFlyDataModule(
+        train_adapter=train_adapter,
+        val_adapter=val_adapter,
+        test_adapter=test_adapter,
+        builder=graph_builder,
         batch_size=batch_size,
+        num_workers=num_workers,
+        train_ratio=train_ratio,
+        seed=kwargs.get("seed", 42),
+        max_nodes_per_batch=max_nodes_per_batch,
+        max_edges_per_batch=max_edges_per_batch,
+        max_triplets_per_batch=max_triplets_per_batch,
     )
 
     # 3. Setup Model
@@ -136,7 +157,7 @@ def train_model(
 
     # 4. Trainer
     # Handle missing validation data to avoid Trainer crashing on None dataloader
-    if not val_data:
+    if not val_adapter:
         if "limit_val_batches" not in kwargs:
             kwargs["limit_val_batches"] = 0.0
         if "num_sanity_val_steps" not in kwargs:
@@ -149,12 +170,12 @@ def train_model(
         logger=logger,
         callbacks=callbacks,
         enable_progress_bar=True,
-        **kwargs,  # Pass kwargs like limit_val_batches if explicitly set
+        **kwargs,
     )
 
     trainer.fit(model, datamodule=dm)
 
-    if test_data:
+    if test_adapter:
         trainer.test(model, datamodule=dm)
 
     return model

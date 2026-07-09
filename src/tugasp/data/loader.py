@@ -1,8 +1,17 @@
+import random
+from typing import Optional, Any
 import pytorch_lightning as L
+from torch.utils.data import IterableDataset, get_worker_info
 from torch_geometric.loader import DataLoader
+
+from .onthefly_dataset import OnTheFlyDataset, OnTheFlyIterableDataset
+from .dataset import TugaGraphBuilder
 
 
 class TugaDataModule(L.LightningDataModule):
+    """
+    Original list-based datamodule. Useful when graphs are built beforehand in memory.
+    """
     def __init__(
         self,
         train_data=None,
@@ -11,12 +20,6 @@ class TugaDataModule(L.LightningDataModule):
         batch_size=32,
         num_workers=0,
     ):
-        """
-        Args:
-            train_data: List of PyG Data objects or structures for training.
-            val_data: List of PyG Data objects or structures for validation.
-            test_data: List of PyG Data objects or structures for testing.
-        """
         super().__init__()
         self.train_data = train_data
         self.val_data = val_data
@@ -59,6 +62,214 @@ class TugaDataModule(L.LightningDataModule):
                 follow_batch=["edge_index", "triplet_index"],
             )
         return None
+
+
+class DynamicBatchWrapper(IterableDataset):
+    """
+    Iterates over a dataset and packs graphs greedily into batches until
+    the budget for nodes, edges, or triplets is met.
+    """
+    def __init__(
+        self,
+        dataset,
+        max_nodes: Optional[int] = None,
+        max_edges: Optional[int] = None,
+        max_triplets: Optional[int] = None,
+        shuffle: bool = False,
+        seed: int = 42,
+    ):
+        super().__init__()
+        self.dataset = dataset
+        self.max_nodes = max_nodes
+        self.max_edges = max_edges
+        self.max_triplets = max_triplets
+        self.shuffle = shuffle
+        self.seed = seed
+        self._epoch = 0
+
+    def _iter_source(self):
+        """Yield graphs from the wrapped dataset, sharded across DataLoader workers.
+
+        Iterable inner datasets (e.g. OnTheFlyIterableDataset) already partition
+        and shuffle their stream per worker internally, so we iterate them directly.
+        Map-style inner datasets have no such logic, so we (optionally) shuffle the
+        index order with an epoch-dependent seed shared across workers, then stride
+        by worker id. Sharing the permutation before striding keeps worker subsets
+        disjoint while still shuffling the global order, and avoids every worker
+        emitting the full dataset (which would duplicate data num_workers times).
+        """
+        if isinstance(self.dataset, IterableDataset):
+            yield from self.dataset
+            return
+
+        worker_info = get_worker_info()
+        n = len(self.dataset)
+        indices = list(range(n))
+        if self.shuffle:
+            # Same permutation across workers so striding stays disjoint.
+            random.Random(self.seed + self._epoch).shuffle(indices)
+            self._epoch += 1
+        if worker_info is not None:
+            indices = indices[worker_info.id :: worker_info.num_workers]
+        for i in indices:
+            yield self.dataset[i]
+
+    def __iter__(self):
+        batch = []
+        cur_n, cur_e, cur_t = 0, 0, 0
+
+        for g in self._iter_source():
+            n = g.num_nodes
+            e = g.num_edges
+            t = (
+                g.triplet_index.size(1)
+                if hasattr(g, "triplet_index") and g.triplet_index is not None
+                else 0
+            )
+
+            # Yield batch if the incoming graph would exceed the budget limits
+            if len(batch) > 0 and (
+                (self.max_nodes and cur_n + n > self.max_nodes)
+                or (self.max_edges and cur_e + e > self.max_edges)
+                or (self.max_triplets and cur_t + t > self.max_triplets)
+            ):
+                yield batch
+                batch = []
+                cur_n, cur_e, cur_t = 0, 0, 0
+
+            batch.append(g)
+            cur_n += n
+            cur_e += e
+            cur_t += t
+
+        if batch:
+            yield batch
+
+
+class OnTheFlyDataModule(L.LightningDataModule):
+    """
+    Lightning DataModule that handles on-the-fly graph construction and batching.
+    Supports list-based, map-style, and iterable-style data store adapters.
+    """
+    def __init__(
+        self,
+        train_adapter: Optional[Any] = None,
+        val_adapter: Optional[Any] = None,
+        test_adapter: Optional[Any] = None,
+        builder: Optional[TugaGraphBuilder] = None,
+        batch_size: int = 32,
+        num_workers: int = 0,
+        train_ratio: float = 1.0,
+        seed: int = 42,
+        max_nodes_per_batch: Optional[int] = None,
+        max_edges_per_batch: Optional[int] = None,
+        max_triplets_per_batch: Optional[int] = None,
+        shuffle: bool = True,
+        buffer_size: int = 1000,
+    ):
+        super().__init__()
+        self.train_adapter = train_adapter
+        self.val_adapter = val_adapter
+        self.test_adapter = test_adapter
+        self.builder = builder
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+        self.train_ratio = train_ratio
+        self.seed = seed
+        self.max_nodes_per_batch = max_nodes_per_batch
+        self.max_edges_per_batch = max_edges_per_batch
+        self.max_triplets_per_batch = max_triplets_per_batch
+        self.shuffle = shuffle
+        self.buffer_size = buffer_size
+
+    def _get_dataset(self, adapter, is_train: bool):
+        if adapter is None:
+            return None
+
+        # Check if the adapter is iterable-only. Prefer an explicit opt-in flag
+        # (BaseStoreAdapter subclasses always define __getitem__, so duck-typing
+        # alone would never route them through the iterable pipeline); otherwise
+        # fall back to duck-typing for plain objects.
+        if hasattr(adapter, "is_iterable"):
+            is_iterable = bool(adapter.is_iterable)
+        else:
+            is_iterable = not hasattr(adapter, "__getitem__") and hasattr(adapter, "__iter__")
+
+        if is_iterable:
+            return OnTheFlyIterableDataset(
+                adapter=adapter,
+                builder=self.builder,
+                train_ratio=self.train_ratio,
+                is_train=is_train,
+                seed=self.seed,
+                shuffle=self.shuffle if is_train else False,
+                buffer_size=self.buffer_size,
+            )
+        else:
+            return OnTheFlyDataset(
+                adapter=adapter,
+                builder=self.builder,
+                train_ratio=self.train_ratio,
+                is_train=is_train,
+                seed=self.seed,
+            )
+
+    def _get_dataloader(self, dataset, shuffle: bool = False):
+        if dataset is None:
+            return None
+
+        use_dynamic = (
+            self.max_nodes_per_batch is not None
+            or self.max_edges_per_batch is not None
+            or self.max_triplets_per_batch is not None
+        )
+
+        persistent_workers = self.num_workers > 0
+
+        if not use_dynamic:
+            is_iterable = isinstance(dataset, IterableDataset)
+            return DataLoader(
+                dataset,
+                batch_size=self.batch_size,
+                shuffle=shuffle if not is_iterable else False,
+                num_workers=self.num_workers,
+                pin_memory=True,
+                persistent_workers=persistent_workers,
+                follow_batch=["edge_index", "triplet_index"],
+            )
+        else:
+            wrapped_dataset = DynamicBatchWrapper(
+                dataset,
+                max_nodes=self.max_nodes_per_batch,
+                max_edges=self.max_edges_per_batch,
+                max_triplets=self.max_triplets_per_batch,
+                shuffle=shuffle,
+                seed=self.seed,
+            )
+            return DataLoader(
+                wrapped_dataset,
+                batch_size=None,
+                num_workers=self.num_workers,
+                pin_memory=True,
+                persistent_workers=persistent_workers,
+                follow_batch=["edge_index", "triplet_index"],
+            )
+
+    def train_dataloader(self):
+        dataset = self._get_dataset(self.train_adapter, is_train=True)
+        return self._get_dataloader(dataset, shuffle=self.shuffle)
+
+    def val_dataloader(self):
+        # When train_ratio < 1.0 and val_adapter is the same object as
+        # train_adapter, _get_dataset(is_train=False) selects the held-out
+        # complement of the training split. With the default train_ratio=1.0
+        # (no split), a separately-provided val_adapter is used in full.
+        dataset = self._get_dataset(self.val_adapter, is_train=False)
+        return self._get_dataloader(dataset, shuffle=False)
+
+    def test_dataloader(self):
+        dataset = self._get_dataset(self.test_adapter, is_train=False)
+        return self._get_dataloader(dataset, shuffle=False)
 
 
 def create_loader(graphs, batch_size=32, shuffle=False):
