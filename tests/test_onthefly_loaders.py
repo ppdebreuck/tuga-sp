@@ -255,3 +255,45 @@ def test_dynamic_wrapper_shuffle_changes_order_and_preserves_set():
     assert sorted(epoch1) == sorted(ordered)
     assert epoch1 != ordered
     assert epoch1 != epoch2
+
+
+# --- End-to-end tests with real DataLoader worker processes (num_workers>0) ---
+# These spawn actual subprocesses, exercising the sharding logic for real rather
+# than mocking get_worker_info. Everything referenced must be picklable and defined
+# at module level (macOS/Windows use the 'spawn' start method).
+
+def _collect_targets(loader):
+    ys = []
+    for batch in loader:
+        ys.extend(batch.y.view(-1).tolist())
+    return ys
+
+
+def test_real_workers_dynamic_batching_full_coverage_no_duplication():
+    n = 12
+    structures = [make_dummy_structure(5.0 + i * 0.1) for i in range(n)]
+    targets = [float(i) for i in range(n)]
+    dm = OnTheFlyDataModule(
+        train_adapter=ListStoreAdapter(structures, targets),
+        builder=TugaGraphBuilder(),
+        num_workers=2,
+        max_nodes_per_batch=5,  # dynamic-cost batching -> DynamicBatchWrapper
+        shuffle=True,
+        seed=0,
+    )
+    ys = _collect_targets(dm.train_dataloader())
+    assert sorted(ys) == targets
+
+
+def test_real_workers_iterable_full_coverage_no_duplication():
+    n = 12
+    dm = OnTheFlyDataModule(
+        train_adapter=_IterableAdapter(n),
+        builder=TugaGraphBuilder(),
+        batch_size=3,
+        num_workers=2,
+        shuffle=True,
+        seed=0,
+    )
+    ys = _collect_targets(dm.train_dataloader())
+    assert sorted(ys) == [float(i) for i in range(n)]
