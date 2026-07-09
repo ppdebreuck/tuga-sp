@@ -1,5 +1,4 @@
 from typing import Callable, List, Optional, Union, Any
-import numpy as np
 import pytorch_lightning as L
 import torch
 

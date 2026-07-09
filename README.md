@@ -267,6 +267,8 @@ model = train_model(
 )
 ```
 
+For **streaming-only** stores that cannot support random access, implement `__iter__` (and `__len__` if known) instead of `__getitem__`, and set the class attribute `is_iterable = True` so the data module routes the adapter through the streaming pipeline (per-worker sharding and shuffle-buffering are handled for you).
+
 ### 3. Dynamic-Cost Batching
 
 To guard against GPU Out-of-Memory (OOM) errors when structures vary significantly in size, you can specify maximum node, edge, or triplet budgets per batch. Batches are built dynamically until these budgets are met:

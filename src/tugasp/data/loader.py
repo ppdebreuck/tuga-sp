@@ -1,3 +1,4 @@
+import random
 from typing import Optional, Any
 import pytorch_lightning as L
 from torch.utils.data import IterableDataset, get_worker_info
@@ -74,20 +75,28 @@ class DynamicBatchWrapper(IterableDataset):
         max_nodes: Optional[int] = None,
         max_edges: Optional[int] = None,
         max_triplets: Optional[int] = None,
+        shuffle: bool = False,
+        seed: int = 42,
     ):
         super().__init__()
         self.dataset = dataset
         self.max_nodes = max_nodes
         self.max_edges = max_edges
         self.max_triplets = max_triplets
+        self.shuffle = shuffle
+        self.seed = seed
+        self._epoch = 0
 
     def _iter_source(self):
         """Yield graphs from the wrapped dataset, sharded across DataLoader workers.
 
         Iterable inner datasets (e.g. OnTheFlyIterableDataset) already partition
-        their stream per worker internally, so we iterate them directly. Map-style
-        inner datasets have no such logic, so we stride by worker id to avoid every
-        worker emitting the full dataset (which would duplicate data num_workers times).
+        and shuffle their stream per worker internally, so we iterate them directly.
+        Map-style inner datasets have no such logic, so we (optionally) shuffle the
+        index order with an epoch-dependent seed shared across workers, then stride
+        by worker id. Sharing the permutation before striding keeps worker subsets
+        disjoint while still shuffling the global order, and avoids every worker
+        emitting the full dataset (which would duplicate data num_workers times).
         """
         if isinstance(self.dataset, IterableDataset):
             yield from self.dataset
@@ -95,10 +104,13 @@ class DynamicBatchWrapper(IterableDataset):
 
         worker_info = get_worker_info()
         n = len(self.dataset)
-        if worker_info is None:
-            indices = range(n)
-        else:
-            indices = range(worker_info.id, n, worker_info.num_workers)
+        indices = list(range(n))
+        if self.shuffle:
+            # Same permutation across workers so striding stays disjoint.
+            random.Random(self.seed + self._epoch).shuffle(indices)
+            self._epoch += 1
+        if worker_info is not None:
+            indices = indices[worker_info.id :: worker_info.num_workers]
         for i in indices:
             yield self.dataset[i]
 
@@ -174,8 +186,14 @@ class OnTheFlyDataModule(L.LightningDataModule):
         if adapter is None:
             return None
 
-        # Check if the adapter is iterable-only
-        is_iterable = not hasattr(adapter, "__getitem__") and hasattr(adapter, "__iter__")
+        # Check if the adapter is iterable-only. Prefer an explicit opt-in flag
+        # (BaseStoreAdapter subclasses always define __getitem__, so duck-typing
+        # alone would never route them through the iterable pipeline); otherwise
+        # fall back to duck-typing for plain objects.
+        if hasattr(adapter, "is_iterable"):
+            is_iterable = bool(adapter.is_iterable)
+        else:
+            is_iterable = not hasattr(adapter, "__getitem__") and hasattr(adapter, "__iter__")
 
         if is_iterable:
             return OnTheFlyIterableDataset(
@@ -225,6 +243,8 @@ class OnTheFlyDataModule(L.LightningDataModule):
                 max_nodes=self.max_nodes_per_batch,
                 max_edges=self.max_edges_per_batch,
                 max_triplets=self.max_triplets_per_batch,
+                shuffle=shuffle,
+                seed=self.seed,
             )
             return DataLoader(
                 wrapped_dataset,
@@ -240,8 +260,10 @@ class OnTheFlyDataModule(L.LightningDataModule):
         return self._get_dataloader(dataset, shuffle=self.shuffle)
 
     def val_dataloader(self):
-        # If val_adapter is the same as train_adapter, self._get_dataset
-        # automatically filters val rows based on train_ratio and is_train=False
+        # When train_ratio < 1.0 and val_adapter is the same object as
+        # train_adapter, _get_dataset(is_train=False) selects the held-out
+        # complement of the training split. With the default train_ratio=1.0
+        # (no split), a separately-provided val_adapter is used in full.
         dataset = self._get_dataset(self.val_adapter, is_train=False)
         return self._get_dataloader(dataset, shuffle=False)
 

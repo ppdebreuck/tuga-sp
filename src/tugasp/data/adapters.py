@@ -10,7 +10,19 @@ except ImportError:
 
 
 class BaseStoreAdapter:
-    """Base interface for all data store adapters."""
+    """Base interface for all data store adapters.
+
+    Subclasses that support random access implement ``__len__`` and
+    ``__getitem__`` (map-style). Streaming-only stores that can only be
+    iterated should instead implement ``__iter__`` (and ``__len__`` if known)
+    and set the class attribute ``is_iterable = True`` so the data module
+    routes them through the iterable pipeline rather than calling the
+    unimplemented ``__getitem__``.
+    """
+
+    #: Whether this adapter is stream-only (no random access via __getitem__).
+    is_iterable = False
+
     def __len__(self) -> int:
         raise NotImplementedError
 
