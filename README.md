@@ -269,7 +269,22 @@ model = train_model(
 
 For **streaming-only** stores that cannot support random access, implement `__iter__` (and `__len__` if known) instead of `__getitem__`, and set the class attribute `is_iterable = True` so the data module routes the adapter through the streaming pipeline (per-worker sharding and shuffle-buffering are handled for you).
 
-### 3. Dynamic-Cost Batching
+### 3. Train/Validation Splitting
+
+You can either provide independent `train_structures` and `val_structures` (each used in full), or carve a deterministic validation split out of a single dataset. To split one dataset, pass the **same** structures/adapter to both arguments and set `train_ratio < 1.0`:
+
+```python
+model = train_model(
+    train_structures=adapter,   # same object (or same underlying data)
+    val_structures=adapter,     # passed to both
+    train_ratio=0.9,            # 90% train / 10% validation
+    seed=42,                    # controls the split (and shuffling)
+)
+```
+
+The split is assigned per-record via a deterministic hash of the index, so train and validation partitions are disjoint and reproducible across runs. With the default `train_ratio=1.0` no split is applied: `train_structures` is used fully and a separately-provided `val_structures` is used fully.
+
+### 4. Dynamic-Cost Batching
 
 To guard against GPU Out-of-Memory (OOM) errors when structures vary significantly in size, you can specify maximum node, edge, or triplet budgets per batch. Batches are built dynamically until these budgets are met:
 
