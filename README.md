@@ -4,7 +4,7 @@
 </p>
 
 # Tuga-SP
-**TugaSP** is a lightweight, easy-to-use graph model designed to make graph work feel effortless.  
+**TugaSP** is a lightweight, easy-to-use graph neural network for materials and chemistry.
 If Tuga can use it, so can you. *Waf!*
 
 The model is an invariant Graph Neural Network (GNN) for material property prediction. It leverages the atomic and line (dual) graph representations, using Transformer attention mechanisms to achieve state-of-the-art accuracy on crystal structure tasks.
@@ -29,7 +29,7 @@ Use `uv` for lightning-fast dependency management, but `pip` works too.
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Clone and install in a venv
-git clone git@gitlab.ruhr-uni-bochum.de:aiims/tuga-sp.git
+git clone https://github.com/ppdebreuck/tuga-sp.git
 cd tuga-sp
 uv venv
 source .venv/bin/activate
@@ -42,7 +42,7 @@ uv pip install -e .
 pip install -e .
 ```
 
-To install with benchmarking dependencies (Hydra, WandB, Matminer): -> this coming soon, future commit
+To install with benchmarking dependencies (Hydra, WandB, Matminer):
 ```bash
 pip install ".[benchmarks]"
 ```
@@ -101,11 +101,11 @@ Below are preliminary results on several [Matbench](https://matbench.materialspr
 
 *Note: These results are from a single fold without extensive hyperparameter tuning. Further improvements are expected with optimized settings.*
 
-| Dataset | TugaSP (MAE) | ALIGNN (MAE) | Unit |
-|---------|--------------|--------------|------|
-| Matbench E-form | 21 | 17 | meV/atom |
-| Matbench Perovskites | 32 | 27 | meV/atom |
-| Matbench Band Gaps | 158 | 156 | meV |
+| Dataset | TugaSP (MAE) | coGN (MAE) | coNGN (MAE) | ALIGNN (MAE) | MODNet (MAE) | CGCNN (MAE) | Unit |
+|---------|--------------|------------|-------------|--------------|--------------|-------------|------|
+| Matbench E-form | 21 | 17 | 18 | 22 | 45 | 34 | meV/atom |
+| Matbench Perovskites | 32 | 27 | 29 | 29 | 91 | 45 | meV/atom |
+| Matbench Band Gaps | 158 | 156 | 170 | 186 | 220 | 297 | meV |
 
 ## Hardware Selection (GPU / Multi-GPU)
 
@@ -203,7 +203,7 @@ State properties are read as raw scalar floats and concatenated to `(B, state_pr
 
 ## On-the-Fly Data Loading & Adapters
 
-For large datasets (e.g. millions of structures) where keeping all graphs in memory is impossible, TugaSP supports **on-the-fly graph construction** using the **Adapter Pattern**. Graphs are constructed in parallel inside CPU worker processes as training progresses.
+For large datasets (e.g. millions of structures) where keeping all graphs in memory is impossible, TugaSP supports **on-the-fly graph construction** using an **Adapter Pattern**. Graphs are constructed in parallel inside CPU worker processes as training progresses.
 
 You can specify the number of parallel CPU worker processes using the `num_workers` parameter in `train_model`.
 
@@ -311,8 +311,13 @@ python benchmark/matbench.py experiment=mp_e_form
 - [x] Add node embeddings from pymatgen site properties
 - ... please make an issue/PR for other ideas!
 
+## Contributing
+
+TugaSP is meant to be a community project, and we are happy to receive feedback, ideas, issues, and pull requests! Feel free to open an issue or submit a PR if you have suggestions or would like to contribute.
+
 ## License
 MIT License.
 
 ## Author
-Pierre-Paul De Breuck
+This software is written by [Pierre-Paul De Breuck](mailto:pierre-paul.debreuck@rub.de) with contributions from Paulo Pires and Miguel Marques.
+For an up-to-date list, see the [Contributors on GitHub](https://github.com/ppdebreuck/tuga-sp/graphs/contributors).
